@@ -19,9 +19,3 @@ node_modules/
 .env
 
 .DS_Store
-
-web.js*
-web-dev.js*
-node.js*
-node-dev.js*
-*.map
