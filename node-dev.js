@@ -119,6 +119,7 @@ module.exports = __webpack_require__(/*! ./lib/axios */ "./node_modules/axios/li
 
 var utils = __webpack_require__(/*! ./../utils */ "./node_modules/axios/lib/utils.js");
 var settle = __webpack_require__(/*! ./../core/settle */ "./node_modules/axios/lib/core/settle.js");
+var buildFullPath = __webpack_require__(/*! ../core/buildFullPath */ "./node_modules/axios/lib/core/buildFullPath.js");
 var buildURL = __webpack_require__(/*! ./../helpers/buildURL */ "./node_modules/axios/lib/helpers/buildURL.js");
 var http = __webpack_require__(/*! http */ "http");
 var https = __webpack_require__(/*! https */ "https");
@@ -135,13 +136,10 @@ var isHttps = /https:?/;
 /*eslint consistent-return:0*/
 module.exports = function httpAdapter(config) {
   return new Promise(function dispatchHttpRequest(resolvePromise, rejectPromise) {
-    var timer;
     var resolve = function resolve(value) {
-      clearTimeout(timer);
       resolvePromise(value);
     };
     var reject = function reject(value) {
-      clearTimeout(timer);
       rejectPromise(value);
     };
     var data = config.data;
@@ -181,7 +179,8 @@ module.exports = function httpAdapter(config) {
     }
 
     // Parse url
-    var parsed = url.parse(config.url);
+    var fullPath = buildFullPath(config.baseURL, config.url);
+    var parsed = url.parse(fullPath);
     var protocol = parsed.protocol || 'http:';
 
     if (!auth && parsed.auth) {
@@ -203,6 +202,7 @@ module.exports = function httpAdapter(config) {
       method: config.method.toUpperCase(),
       headers: headers,
       agent: agent,
+      agents: { http: config.httpAgent, https: config.httpsAgent },
       auth: auth
     };
 
@@ -235,8 +235,7 @@ module.exports = function httpAdapter(config) {
               return true;
             }
             if (proxyElement[0] === '.' &&
-                parsed.hostname.substr(parsed.hostname.length - proxyElement.length) === proxyElement &&
-                proxyElement.match(/\./g).length === parsed.hostname.match(/\./g).length) {
+                parsed.hostname.substr(parsed.hostname.length - proxyElement.length) === proxyElement) {
               return true;
             }
 
@@ -364,10 +363,15 @@ module.exports = function httpAdapter(config) {
 
     // Handle request timeout
     if (config.timeout) {
-      timer = setTimeout(function handleRequestTimeout() {
+      // Sometime, the response will be very slow, and does not respond, the connect event will be block by event loop system.
+      // And timer callback will be fired, and abort() will be invoked before connection, then get "socket hang up" and code ECONNRESET.
+      // At this time, if we have a large number of request, nodejs will hang up some socket on background. and the number will up and up.
+      // And then these socket which be hang up will devoring CPU little by little.
+      // ClientRequest.setTimeout will be fired on the specify milliseconds, and can make sure that abort() will be fired after connect.
+      req.setTimeout(config.timeout, function handleRequestTimeout() {
         req.abort();
         reject(createError('timeout of ' + config.timeout + 'ms exceeded', config, 'ECONNABORTED', req));
-      }, config.timeout);
+      });
     }
 
     if (config.cancelToken) {
@@ -407,6 +411,7 @@ module.exports = function httpAdapter(config) {
 var utils = __webpack_require__(/*! ./../utils */ "./node_modules/axios/lib/utils.js");
 var settle = __webpack_require__(/*! ./../core/settle */ "./node_modules/axios/lib/core/settle.js");
 var buildURL = __webpack_require__(/*! ./../helpers/buildURL */ "./node_modules/axios/lib/helpers/buildURL.js");
+var buildFullPath = __webpack_require__(/*! ../core/buildFullPath */ "./node_modules/axios/lib/core/buildFullPath.js");
 var parseHeaders = __webpack_require__(/*! ./../helpers/parseHeaders */ "./node_modules/axios/lib/helpers/parseHeaders.js");
 var isURLSameOrigin = __webpack_require__(/*! ./../helpers/isURLSameOrigin */ "./node_modules/axios/lib/helpers/isURLSameOrigin.js");
 var createError = __webpack_require__(/*! ../core/createError */ "./node_modules/axios/lib/core/createError.js");
@@ -429,7 +434,8 @@ module.exports = function xhrAdapter(config) {
       requestHeaders.Authorization = 'Basic ' + btoa(username + ':' + password);
     }
 
-    request.open(config.method.toUpperCase(), buildURL(config.url, config.params, config.paramsSerializer), true);
+    var fullPath = buildFullPath(config.baseURL, config.url);
+    request.open(config.method.toUpperCase(), buildURL(fullPath, config.params, config.paramsSerializer), true);
 
     // Set the request timeout in MS
     request.timeout = config.timeout;
@@ -490,7 +496,11 @@ module.exports = function xhrAdapter(config) {
 
     // Handle timeout
     request.ontimeout = function handleTimeout() {
-      reject(createError('timeout of ' + config.timeout + 'ms exceeded', config, 'ECONNABORTED',
+      var timeoutErrorMessage = 'timeout of ' + config.timeout + 'ms exceeded';
+      if (config.timeoutErrorMessage) {
+        timeoutErrorMessage = config.timeoutErrorMessage;
+      }
+      reject(createError(timeoutErrorMessage, config, 'ECONNABORTED',
         request));
 
       // Clean up request
@@ -504,7 +514,7 @@ module.exports = function xhrAdapter(config) {
       var cookies = __webpack_require__(/*! ./../helpers/cookies */ "./node_modules/axios/lib/helpers/cookies.js");
 
       // Add xsrf header
-      var xsrfValue = (config.withCredentials || isURLSameOrigin(config.url)) && config.xsrfCookieName ?
+      var xsrfValue = (config.withCredentials || isURLSameOrigin(fullPath)) && config.xsrfCookieName ?
         cookies.read(config.xsrfCookieName) :
         undefined;
 
@@ -527,8 +537,8 @@ module.exports = function xhrAdapter(config) {
     }
 
     // Add withCredentials to request if needed
-    if (config.withCredentials) {
-      request.withCredentials = true;
+    if (!utils.isUndefined(config.withCredentials)) {
+      request.withCredentials = !!config.withCredentials;
     }
 
     // Add responseType to request if needed
@@ -807,7 +817,15 @@ Axios.prototype.request = function request(config) {
   }
 
   config = mergeConfig(this.defaults, config);
-  config.method = config.method ? config.method.toLowerCase() : 'get';
+
+  // Set config.method
+  if (config.method) {
+    config.method = config.method.toLowerCase();
+  } else if (this.defaults.method) {
+    config.method = this.defaults.method.toLowerCase();
+  } else {
+    config.method = 'get';
+  }
 
   // Hook up interceptors middleware
   var chain = [dispatchRequest, undefined];
@@ -924,6 +942,38 @@ module.exports = InterceptorManager;
 
 /***/ }),
 
+/***/ "./node_modules/axios/lib/core/buildFullPath.js":
+/*!******************************************************!*\
+  !*** ./node_modules/axios/lib/core/buildFullPath.js ***!
+  \******************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var isAbsoluteURL = __webpack_require__(/*! ../helpers/isAbsoluteURL */ "./node_modules/axios/lib/helpers/isAbsoluteURL.js");
+var combineURLs = __webpack_require__(/*! ../helpers/combineURLs */ "./node_modules/axios/lib/helpers/combineURLs.js");
+
+/**
+ * Creates a new URL by combining the baseURL with the requestedURL,
+ * only when the requestedURL is not already an absolute URL.
+ * If the requestURL is absolute, this function returns the requestedURL untouched.
+ *
+ * @param {string} baseURL The base URL
+ * @param {string} requestedURL Absolute or relative URL to combine
+ * @returns {string} The combined full path
+ */
+module.exports = function buildFullPath(baseURL, requestedURL) {
+  if (baseURL && !isAbsoluteURL(requestedURL)) {
+    return combineURLs(baseURL, requestedURL);
+  }
+  return requestedURL;
+};
+
+
+/***/ }),
+
 /***/ "./node_modules/axios/lib/core/createError.js":
 /*!****************************************************!*\
   !*** ./node_modules/axios/lib/core/createError.js ***!
@@ -968,8 +1018,6 @@ var utils = __webpack_require__(/*! ./../utils */ "./node_modules/axios/lib/util
 var transformData = __webpack_require__(/*! ./transformData */ "./node_modules/axios/lib/core/transformData.js");
 var isCancel = __webpack_require__(/*! ../cancel/isCancel */ "./node_modules/axios/lib/cancel/isCancel.js");
 var defaults = __webpack_require__(/*! ../defaults */ "./node_modules/axios/lib/defaults.js");
-var isAbsoluteURL = __webpack_require__(/*! ./../helpers/isAbsoluteURL */ "./node_modules/axios/lib/helpers/isAbsoluteURL.js");
-var combineURLs = __webpack_require__(/*! ./../helpers/combineURLs */ "./node_modules/axios/lib/helpers/combineURLs.js");
 
 /**
  * Throws a `Cancel` if cancellation has been requested.
@@ -989,11 +1037,6 @@ function throwIfCancellationRequested(config) {
 module.exports = function dispatchRequest(config) {
   throwIfCancellationRequested(config);
 
-  // Support baseURL config
-  if (config.baseURL && !isAbsoluteURL(config.url)) {
-    config.url = combineURLs(config.baseURL, config.url);
-  }
-
   // Ensure headers exist
   config.headers = config.headers || {};
 
@@ -1008,7 +1051,7 @@ module.exports = function dispatchRequest(config) {
   config.headers = utils.merge(
     config.headers.common || {},
     config.headers[config.method] || {},
-    config.headers || {}
+    config.headers
   );
 
   utils.forEach(
@@ -1131,13 +1174,23 @@ module.exports = function mergeConfig(config1, config2) {
   config2 = config2 || {};
   var config = {};
 
-  utils.forEach(['url', 'method', 'params', 'data'], function valueFromConfig2(prop) {
+  var valueFromConfig2Keys = ['url', 'method', 'params', 'data'];
+  var mergeDeepPropertiesKeys = ['headers', 'auth', 'proxy'];
+  var defaultToConfig2Keys = [
+    'baseURL', 'url', 'transformRequest', 'transformResponse', 'paramsSerializer',
+    'timeout', 'withCredentials', 'adapter', 'responseType', 'xsrfCookieName',
+    'xsrfHeaderName', 'onUploadProgress', 'onDownloadProgress',
+    'maxContentLength', 'validateStatus', 'maxRedirects', 'httpAgent',
+    'httpsAgent', 'cancelToken', 'socketPath'
+  ];
+
+  utils.forEach(valueFromConfig2Keys, function valueFromConfig2(prop) {
     if (typeof config2[prop] !== 'undefined') {
       config[prop] = config2[prop];
     }
   });
 
-  utils.forEach(['headers', 'auth', 'proxy'], function mergeDeepProperties(prop) {
+  utils.forEach(mergeDeepPropertiesKeys, function mergeDeepProperties(prop) {
     if (utils.isObject(config2[prop])) {
       config[prop] = utils.deepMerge(config1[prop], config2[prop]);
     } else if (typeof config2[prop] !== 'undefined') {
@@ -1149,13 +1202,25 @@ module.exports = function mergeConfig(config1, config2) {
     }
   });
 
-  utils.forEach([
-    'baseURL', 'transformRequest', 'transformResponse', 'paramsSerializer',
-    'timeout', 'withCredentials', 'adapter', 'responseType', 'xsrfCookieName',
-    'xsrfHeaderName', 'onUploadProgress', 'onDownloadProgress', 'maxContentLength',
-    'validateStatus', 'maxRedirects', 'httpAgent', 'httpsAgent', 'cancelToken',
-    'socketPath'
-  ], function defaultToConfig2(prop) {
+  utils.forEach(defaultToConfig2Keys, function defaultToConfig2(prop) {
+    if (typeof config2[prop] !== 'undefined') {
+      config[prop] = config2[prop];
+    } else if (typeof config1[prop] !== 'undefined') {
+      config[prop] = config1[prop];
+    }
+  });
+
+  var axiosKeys = valueFromConfig2Keys
+    .concat(mergeDeepPropertiesKeys)
+    .concat(defaultToConfig2Keys);
+
+  var otherKeys = Object
+    .keys(config2)
+    .filter(function filterAxiosKeys(key) {
+      return axiosKeys.indexOf(key) === -1;
+    });
+
+  utils.forEach(otherKeys, function otherKeysDefaultToConfig2(prop) {
     if (typeof config2[prop] !== 'undefined') {
       config[prop] = config2[prop];
     } else if (typeof config1[prop] !== 'undefined') {
@@ -1263,13 +1328,12 @@ function setContentTypeIfUnset(headers, value) {
 
 function getDefaultAdapter() {
   var adapter;
-  // Only Node.JS has a process variable that is of [[Class]] process
-  if (typeof process !== 'undefined' && Object.prototype.toString.call(process) === '[object process]') {
-    // For node use HTTP adapter
-    adapter = __webpack_require__(/*! ./adapters/http */ "./node_modules/axios/lib/adapters/http.js");
-  } else if (typeof XMLHttpRequest !== 'undefined') {
+  if (typeof XMLHttpRequest !== 'undefined') {
     // For browsers use XHR adapter
     adapter = __webpack_require__(/*! ./adapters/xhr */ "./node_modules/axios/lib/adapters/xhr.js");
+  } else if (typeof process !== 'undefined' && Object.prototype.toString.call(process) === '[object process]') {
+    // For node use HTTP adapter
+    adapter = __webpack_require__(/*! ./adapters/http */ "./node_modules/axios/lib/adapters/http.js");
   }
   return adapter;
 }
@@ -1790,7 +1854,6 @@ module.exports = function spread(callback) {
 
 
 var bind = __webpack_require__(/*! ./helpers/bind */ "./node_modules/axios/lib/helpers/bind.js");
-var isBuffer = __webpack_require__(/*! is-buffer */ "./node_modules/is-buffer/index.js");
 
 /*global toString:true*/
 
@@ -1806,6 +1869,27 @@ var toString = Object.prototype.toString;
  */
 function isArray(val) {
   return toString.call(val) === '[object Array]';
+}
+
+/**
+ * Determine if a value is undefined
+ *
+ * @param {Object} val The value to test
+ * @returns {boolean} True if the value is undefined, otherwise false
+ */
+function isUndefined(val) {
+  return typeof val === 'undefined';
+}
+
+/**
+ * Determine if a value is a Buffer
+ *
+ * @param {Object} val The value to test
+ * @returns {boolean} True if value is a Buffer, otherwise false
+ */
+function isBuffer(val) {
+  return val !== null && !isUndefined(val) && val.constructor !== null && !isUndefined(val.constructor)
+    && typeof val.constructor.isBuffer === 'function' && val.constructor.isBuffer(val);
 }
 
 /**
@@ -1862,16 +1946,6 @@ function isString(val) {
  */
 function isNumber(val) {
   return typeof val === 'number';
-}
-
-/**
- * Determine if a value is undefined
- *
- * @param {Object} val The value to test
- * @returns {boolean} True if the value is undefined, otherwise false
- */
-function isUndefined(val) {
-  return typeof val === 'undefined';
 }
 
 /**
@@ -2132,7 +2206,7 @@ module.exports = {
 /*! exports provided: _args, _from, _id, _inBundle, _integrity, _location, _phantomChildren, _requested, _requiredBy, _resolved, _spec, _where, author, browser, bugs, bundlesize, dependencies, description, devDependencies, homepage, keywords, license, main, name, repository, scripts, typings, version, default */
 /***/ (function(module) {
 
-module.exports = JSON.parse("{\"_args\":[[\"axios@0.19.0\",\"/Volumes/Development/ESPN-Fantasy-Football-API\"]],\"_from\":\"axios@0.19.0\",\"_id\":\"axios@0.19.0\",\"_inBundle\":false,\"_integrity\":\"sha512-1uvKqKQta3KBxIz14F2v06AEHZ/dIoeKfbTRkK1E5oqjDnuEerLmYTgJB5AiQZHJcljpg1TuRzdjDR06qNk0DQ==\",\"_location\":\"/axios\",\"_phantomChildren\":{},\"_requested\":{\"type\":\"version\",\"registry\":true,\"raw\":\"axios@0.19.0\",\"name\":\"axios\",\"escapedName\":\"axios\",\"rawSpec\":\"0.19.0\",\"saveSpec\":null,\"fetchSpec\":\"0.19.0\"},\"_requiredBy\":[\"/\"],\"_resolved\":\"https://registry.npmjs.org/axios/-/axios-0.19.0.tgz\",\"_spec\":\"0.19.0\",\"_where\":\"/Volumes/Development/ESPN-Fantasy-Football-API\",\"author\":{\"name\":\"Matt Zabriskie\"},\"browser\":{\"./lib/adapters/http.js\":\"./lib/adapters/xhr.js\"},\"bugs\":{\"url\":\"https://github.com/axios/axios/issues\"},\"bundlesize\":[{\"path\":\"./dist/axios.min.js\",\"threshold\":\"5kB\"}],\"dependencies\":{\"follow-redirects\":\"1.5.10\",\"is-buffer\":\"^2.0.2\"},\"description\":\"Promise based HTTP client for the browser and node.js\",\"devDependencies\":{\"bundlesize\":\"^0.17.0\",\"coveralls\":\"^3.0.0\",\"es6-promise\":\"^4.2.4\",\"grunt\":\"^1.0.2\",\"grunt-banner\":\"^0.6.0\",\"grunt-cli\":\"^1.2.0\",\"grunt-contrib-clean\":\"^1.1.0\",\"grunt-contrib-watch\":\"^1.0.0\",\"grunt-eslint\":\"^20.1.0\",\"grunt-karma\":\"^2.0.0\",\"grunt-mocha-test\":\"^0.13.3\",\"grunt-ts\":\"^6.0.0-beta.19\",\"grunt-webpack\":\"^1.0.18\",\"istanbul-instrumenter-loader\":\"^1.0.0\",\"jasmine-core\":\"^2.4.1\",\"karma\":\"^1.3.0\",\"karma-chrome-launcher\":\"^2.2.0\",\"karma-coverage\":\"^1.1.1\",\"karma-firefox-launcher\":\"^1.1.0\",\"karma-jasmine\":\"^1.1.1\",\"karma-jasmine-ajax\":\"^0.1.13\",\"karma-opera-launcher\":\"^1.0.0\",\"karma-safari-launcher\":\"^1.0.0\",\"karma-sauce-launcher\":\"^1.2.0\",\"karma-sinon\":\"^1.0.5\",\"karma-sourcemap-loader\":\"^0.3.7\",\"karma-webpack\":\"^1.7.0\",\"load-grunt-tasks\":\"^3.5.2\",\"minimist\":\"^1.2.0\",\"mocha\":\"^5.2.0\",\"sinon\":\"^4.5.0\",\"typescript\":\"^2.8.1\",\"url-search-params\":\"^0.10.0\",\"webpack\":\"^1.13.1\",\"webpack-dev-server\":\"^1.14.1\"},\"homepage\":\"https://github.com/axios/axios\",\"keywords\":[\"xhr\",\"http\",\"ajax\",\"promise\",\"node\"],\"license\":\"MIT\",\"main\":\"index.js\",\"name\":\"axios\",\"repository\":{\"type\":\"git\",\"url\":\"git+https://github.com/axios/axios.git\"},\"scripts\":{\"build\":\"NODE_ENV=production grunt build\",\"coveralls\":\"cat coverage/lcov.info | ./node_modules/coveralls/bin/coveralls.js\",\"examples\":\"node ./examples/server.js\",\"fix\":\"eslint --fix lib/**/*.js\",\"postversion\":\"git push && git push --tags\",\"preversion\":\"npm test\",\"start\":\"node ./sandbox/server.js\",\"test\":\"grunt test && bundlesize\",\"version\":\"npm run build && grunt version && git add -A dist && git add CHANGELOG.md bower.json package.json\"},\"typings\":\"./index.d.ts\",\"version\":\"0.19.0\"}");
+module.exports = JSON.parse("{\"_args\":[[\"axios@0.19.2\",\"/Volumes/Development/ESPN-Fantasy-Football-API\"]],\"_from\":\"axios@0.19.2\",\"_id\":\"axios@0.19.2\",\"_inBundle\":false,\"_integrity\":\"sha512-fjgm5MvRHLhx+osE2xoekY70AhARk3a6hkN+3Io1jc00jtquGvxYlKlsFUhmUET0V5te6CcZI7lcv2Ym61mjHA==\",\"_location\":\"/axios\",\"_phantomChildren\":{},\"_requested\":{\"type\":\"version\",\"registry\":true,\"raw\":\"axios@0.19.2\",\"name\":\"axios\",\"escapedName\":\"axios\",\"rawSpec\":\"0.19.2\",\"saveSpec\":null,\"fetchSpec\":\"0.19.2\"},\"_requiredBy\":[\"/\"],\"_resolved\":\"https://registry.npmjs.org/axios/-/axios-0.19.2.tgz\",\"_spec\":\"0.19.2\",\"_where\":\"/Volumes/Development/ESPN-Fantasy-Football-API\",\"author\":{\"name\":\"Matt Zabriskie\"},\"browser\":{\"./lib/adapters/http.js\":\"./lib/adapters/xhr.js\"},\"bugs\":{\"url\":\"https://github.com/axios/axios/issues\"},\"bundlesize\":[{\"path\":\"./dist/axios.min.js\",\"threshold\":\"5kB\"}],\"dependencies\":{\"follow-redirects\":\"1.5.10\"},\"description\":\"Promise based HTTP client for the browser and node.js\",\"devDependencies\":{\"bundlesize\":\"^0.17.0\",\"coveralls\":\"^3.0.0\",\"es6-promise\":\"^4.2.4\",\"grunt\":\"^1.0.2\",\"grunt-banner\":\"^0.6.0\",\"grunt-cli\":\"^1.2.0\",\"grunt-contrib-clean\":\"^1.1.0\",\"grunt-contrib-watch\":\"^1.0.0\",\"grunt-eslint\":\"^20.1.0\",\"grunt-karma\":\"^2.0.0\",\"grunt-mocha-test\":\"^0.13.3\",\"grunt-ts\":\"^6.0.0-beta.19\",\"grunt-webpack\":\"^1.0.18\",\"istanbul-instrumenter-loader\":\"^1.0.0\",\"jasmine-core\":\"^2.4.1\",\"karma\":\"^1.3.0\",\"karma-chrome-launcher\":\"^2.2.0\",\"karma-coverage\":\"^1.1.1\",\"karma-firefox-launcher\":\"^1.1.0\",\"karma-jasmine\":\"^1.1.1\",\"karma-jasmine-ajax\":\"^0.1.13\",\"karma-opera-launcher\":\"^1.0.0\",\"karma-safari-launcher\":\"^1.0.0\",\"karma-sauce-launcher\":\"^1.2.0\",\"karma-sinon\":\"^1.0.5\",\"karma-sourcemap-loader\":\"^0.3.7\",\"karma-webpack\":\"^1.7.0\",\"load-grunt-tasks\":\"^3.5.2\",\"minimist\":\"^1.2.0\",\"mocha\":\"^5.2.0\",\"sinon\":\"^4.5.0\",\"typescript\":\"^2.8.1\",\"url-search-params\":\"^0.10.0\",\"webpack\":\"^1.13.1\",\"webpack-dev-server\":\"^1.14.1\"},\"homepage\":\"https://github.com/axios/axios\",\"keywords\":[\"xhr\",\"http\",\"ajax\",\"promise\",\"node\"],\"license\":\"MIT\",\"main\":\"index.js\",\"name\":\"axios\",\"repository\":{\"type\":\"git\",\"url\":\"git+https://github.com/axios/axios.git\"},\"scripts\":{\"build\":\"NODE_ENV=production grunt build\",\"coveralls\":\"cat coverage/lcov.info | ./node_modules/coveralls/bin/coveralls.js\",\"examples\":\"node ./examples/server.js\",\"fix\":\"eslint --fix lib/**/*.js\",\"postversion\":\"git push && git push --tags\",\"preversion\":\"npm test\",\"start\":\"node ./sandbox/server.js\",\"test\":\"grunt test && bundlesize\",\"version\":\"npm run build && grunt version && git add -A dist && git add CHANGELOG.md bower.json package.json\"},\"typings\":\"./index.d.ts\",\"version\":\"0.19.2\"}");
 
 /***/ }),
 
@@ -3145,28 +3219,6 @@ module.exports = (flag, argv) => {
 	const terminatorPos = argv.indexOf('--');
 	return pos !== -1 && (terminatorPos === -1 ? true : pos < terminatorPos);
 };
-
-
-/***/ }),
-
-/***/ "./node_modules/is-buffer/index.js":
-/*!*****************************************!*\
-  !*** ./node_modules/is-buffer/index.js ***!
-  \*****************************************/
-/*! no static exports found */
-/***/ (function(module, exports) {
-
-/*!
- * Determine if an object is a Buffer
- *
- * @author   Feross Aboukhadijeh <https://feross.org>
- * @license  MIT
- */
-
-module.exports = function isBuffer (obj) {
-  return obj != null && obj.constructor != null &&
-    typeof obj.constructor.isBuffer === 'function' && obj.constructor.isBuffer(obj)
-}
 
 
 /***/ }),
@@ -10836,7 +10888,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -11339,7 +11391,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _constants__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ../constants */ "./src/constants.js");
 
 
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -11359,10 +11411,12 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
 
 
 
+/* global PlayerStats */
+
 /**
  * Represents a player and their stats on a boxscore.
  *
- * @extends {BaseObject}
+ * @augments {BaseObject}
  */
 
 var BoxscorePlayer =
@@ -11469,7 +11523,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -11490,7 +11544,7 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
 /**
  * Represents a boxscore for a week.
  *
- * @extends {BaseObject}
+ * @augments {BaseObject}
  */
 
 var Boxscore =
@@ -11557,22 +11611,25 @@ _defineProperty(Boxscore, "responseMap", {
 
 "use strict";
 __webpack_require__.r(__webpack_exports__);
-/* harmony import */ var lodash_merge__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! lodash/merge */ "./node_modules/lodash/merge.js");
-/* harmony import */ var lodash_merge__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(lodash_merge__WEBPACK_IMPORTED_MODULE_0__);
-/* harmony import */ var lodash_map__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! lodash/map */ "./node_modules/lodash/map.js");
-/* harmony import */ var lodash_map__WEBPACK_IMPORTED_MODULE_1___default = /*#__PURE__*/__webpack_require__.n(lodash_map__WEBPACK_IMPORTED_MODULE_1__);
-/* harmony import */ var lodash_filter__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! lodash/filter */ "./node_modules/lodash/filter.js");
-/* harmony import */ var lodash_filter__WEBPACK_IMPORTED_MODULE_2___default = /*#__PURE__*/__webpack_require__.n(lodash_filter__WEBPACK_IMPORTED_MODULE_2__);
-/* harmony import */ var lodash_get__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! lodash/get */ "./node_modules/lodash/get.js");
-/* harmony import */ var lodash_get__WEBPACK_IMPORTED_MODULE_3___default = /*#__PURE__*/__webpack_require__.n(lodash_get__WEBPACK_IMPORTED_MODULE_3__);
-/* harmony import */ var axios__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! axios */ "./node_modules/axios/index.js");
-/* harmony import */ var axios__WEBPACK_IMPORTED_MODULE_4___default = /*#__PURE__*/__webpack_require__.n(axios__WEBPACK_IMPORTED_MODULE_4__);
-/* harmony import */ var _boxscore_boxscore__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ../boxscore/boxscore */ "./src/boxscore/boxscore.js");
-/* harmony import */ var _free_agent_player_free_agent_player__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ../free-agent-player/free-agent-player */ "./src/free-agent-player/free-agent-player.js");
-/* harmony import */ var _league_league__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ../league/league */ "./src/league/league.js");
-/* harmony import */ var _matchup_score_matchup_score__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ../matchup-score/matchup-score */ "./src/matchup-score/matchup-score.js");
-/* harmony import */ var _nfl_game_nfl_game__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ../nfl-game/nfl-game */ "./src/nfl-game/nfl-game.js");
-/* harmony import */ var _team_team__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ../team/team */ "./src/team/team.js");
+/* harmony import */ var lodash_isArray__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! lodash/isArray */ "./node_modules/lodash/isArray.js");
+/* harmony import */ var lodash_isArray__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(lodash_isArray__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var lodash_merge__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! lodash/merge */ "./node_modules/lodash/merge.js");
+/* harmony import */ var lodash_merge__WEBPACK_IMPORTED_MODULE_1___default = /*#__PURE__*/__webpack_require__.n(lodash_merge__WEBPACK_IMPORTED_MODULE_1__);
+/* harmony import */ var lodash_map__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! lodash/map */ "./node_modules/lodash/map.js");
+/* harmony import */ var lodash_map__WEBPACK_IMPORTED_MODULE_2___default = /*#__PURE__*/__webpack_require__.n(lodash_map__WEBPACK_IMPORTED_MODULE_2__);
+/* harmony import */ var lodash_filter__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! lodash/filter */ "./node_modules/lodash/filter.js");
+/* harmony import */ var lodash_filter__WEBPACK_IMPORTED_MODULE_3___default = /*#__PURE__*/__webpack_require__.n(lodash_filter__WEBPACK_IMPORTED_MODULE_3__);
+/* harmony import */ var lodash_get__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! lodash/get */ "./node_modules/lodash/get.js");
+/* harmony import */ var lodash_get__WEBPACK_IMPORTED_MODULE_4___default = /*#__PURE__*/__webpack_require__.n(lodash_get__WEBPACK_IMPORTED_MODULE_4__);
+/* harmony import */ var axios__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! axios */ "./node_modules/axios/index.js");
+/* harmony import */ var axios__WEBPACK_IMPORTED_MODULE_5___default = /*#__PURE__*/__webpack_require__.n(axios__WEBPACK_IMPORTED_MODULE_5__);
+/* harmony import */ var _boxscore_boxscore__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ../boxscore/boxscore */ "./src/boxscore/boxscore.js");
+/* harmony import */ var _free_agent_player_free_agent_player__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ../free-agent-player/free-agent-player */ "./src/free-agent-player/free-agent-player.js");
+/* harmony import */ var _league_league__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ../league/league */ "./src/league/league.js");
+/* harmony import */ var _matchup_score_matchup_score__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ../matchup-score/matchup-score */ "./src/matchup-score/matchup-score.js");
+/* harmony import */ var _nfl_game_nfl_game__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ../nfl-game/nfl-game */ "./src/nfl-game/nfl-game.js");
+/* harmony import */ var _team_team__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ../team/team */ "./src/team/team.js");
+
 
 
 
@@ -11591,7 +11648,7 @@ function _createClass(Constructor, protoProps, staticProps) { if (protoProps) _d
 
 
 
-axios__WEBPACK_IMPORTED_MODULE_4___default.a.defaults.baseURL = 'https://fantasy.espn.com/apis/v3/games/ffl/seasons/';
+axios__WEBPACK_IMPORTED_MODULE_5___default.a.defaults.baseURL = 'https://fantasy.espn.com/apis/v3/games/ffl/seasons/';
 /**
  * Provides functionality to make a variety of API calls to ESPN for a given fantasy football
  * league. This class should be used by consuming projects.
@@ -11615,9 +11672,11 @@ function () {
   }
   /**
    * Set cookies from ESPN for interacting with private leagues in NodeJS. Both cookie smust be
-   * provided to be set.
-   * @param {string} options.espnS2
-   * @param {string} options.SWID
+   * provided to be set. See the README for instructions on how to find these cookies.
+   *
+   * @param {object} options Required options object.
+   * @param {string} options.espnS2 The value of the `espn_s2` cookie key:value pair to auth with.
+   * @param {string} options.SWID The value of the `SWID` cookie key:value pair to auth with.
    */
 
 
@@ -11634,12 +11693,15 @@ function () {
     }
     /**
      * Returns all boxscores for a week.
+     *
      * NOTE: Due to the way ESPN populates data, both the `scoringPeriodId` and `matchupPeriodId` are
      * required and must correspond with each other correctly.
-     * @param  {number} options.seasonId The season in which the boxscores occur.
-     * @param  {number} options.matchupPeriodId
-     * @param  {number} options.scoringPeriodId
-     * @return {Boxscore[]}
+     *
+     * @param  {object} options Required options object.
+     * @param  {number} options.seasonId The season in which the boxscore occurs.
+     * @param  {number} options.matchupPeriodId The matchup period in which the boxscore occurs.
+     * @param  {number} options.scoringPeriodId The scoring period in which the boxscore occurs.
+     * @returns {Boxscore[]} All boxscores for the week
      */
 
   }, {
@@ -11651,20 +11713,20 @@ function () {
           matchupPeriodId = _ref2.matchupPeriodId,
           scoringPeriodId = _ref2.scoringPeriodId;
 
-      var route = this.constructor._buildRoute({
-        base: this._getLeagueSeasonBaseRoute(seasonId),
-        params: "?view=mMatchup&view=mMatchupScore&scoringPeriodId=".concat(scoringPeriodId)
+      var route = this._buildLeagueSeasonRouteWithParams(seasonId, {
+        scoringPeriodId: scoringPeriodId,
+        view: ['mMatchup', 'mMatchupScore']
       });
 
-      return axios__WEBPACK_IMPORTED_MODULE_4___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
-        var schedule = lodash_get__WEBPACK_IMPORTED_MODULE_3___default()(response.data, 'schedule');
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
+        var schedule = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'schedule');
 
-        var data = lodash_filter__WEBPACK_IMPORTED_MODULE_2___default()(schedule, {
+        var data = lodash_filter__WEBPACK_IMPORTED_MODULE_3___default()(schedule, {
           matchupPeriodId: matchupPeriodId
         });
 
-        return lodash_map__WEBPACK_IMPORTED_MODULE_1___default()(data, function (matchup) {
-          return _boxscore_boxscore__WEBPACK_IMPORTED_MODULE_5__["default"].buildFromServer(matchup, {
+        return lodash_map__WEBPACK_IMPORTED_MODULE_2___default()(data, function (matchup) {
+          return _boxscore_boxscore__WEBPACK_IMPORTED_MODULE_6__["default"].buildFromServer(matchup, {
             leagueId: _this.leagueId,
             seasonId: seasonId
           });
@@ -11674,14 +11736,18 @@ function () {
     /**
      * Returns boxscores WITHOUT ROSTERS for PREVIOUS seasons. Useful for pulling historical
      * scoreboards.
+     *
      * NOTE: This route will error for the current season, as ESPN only exposes this data for previous
      * seasons.
+     *
      * NOTE: Due to the way ESPN populates data, both the `scoringPeriodId` and `matchupPeriodId` are
      * required and must correspond with each other correctly.
-     * @param  {number} options.seasonId The season in which the boxscores occur.
-     * @param  {number} options.matchupPeriodId
-     * @param  {number} options.scoringPeriodId
-     * @return {Boxscore[]}
+     *
+     * @param  {object} options Required options object.
+     * @param  {number} options.seasonId The season in which the boxscore occurs.
+     * @param  {number} options.matchupPeriodId The matchup period in which the boxscore occurs.
+     * @param  {number} options.scoringPeriodId The scoring period in which the boxscore occurs.
+     * @returns {Boxscore[]} All boxscores for the week
      */
 
   }, {
@@ -11702,16 +11768,16 @@ function () {
         baseURL: 'https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/'
       });
 
-      return axios__WEBPACK_IMPORTED_MODULE_4___default.a.get(route, axiosConfig).then(function (response) {
-        var schedule = lodash_get__WEBPACK_IMPORTED_MODULE_3___default()(response.data[0], 'schedule'); // Data is an array instead of object
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(route, axiosConfig).then(function (response) {
+        var schedule = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data[0], 'schedule'); // Data is an array instead of object
 
 
-        var data = lodash_filter__WEBPACK_IMPORTED_MODULE_2___default()(schedule, {
+        var data = lodash_filter__WEBPACK_IMPORTED_MODULE_3___default()(schedule, {
           matchupPeriodId: matchupPeriodId
         });
 
-        return lodash_map__WEBPACK_IMPORTED_MODULE_1___default()(data, function (matchup) {
-          return _boxscore_boxscore__WEBPACK_IMPORTED_MODULE_5__["default"].buildFromServer(matchup, {
+        return lodash_map__WEBPACK_IMPORTED_MODULE_2___default()(data, function (matchup) {
+          return _boxscore_boxscore__WEBPACK_IMPORTED_MODULE_6__["default"].buildFromServer(matchup, {
             leagueId: _this2.leagueId,
             seasonId: seasonId
           });
@@ -11720,10 +11786,13 @@ function () {
     }
     /**
      * Returns all free agents (in terms of the league's rosters) for a given week.
+     *
      * NOTE: `scoringPeriodId` of 0 corresponds to the preseason; `18` for after the season ends.
-     * @param  {number} options.seasonId
-     * @param  {number} options.scoringPeriodId
-     * @return {FreeAgentPlayer[]}
+     *
+     * @param  {object} options Required options object.
+     * @param  {number} options.seasonId The season to grab data from.
+     * @param  {number} options.scoringPeriodId The scoring period to grab free agents from.
+     * @returns {FreeAgentPlayer[]} The list of free agents.
      */
 
   }, {
@@ -11734,16 +11803,16 @@ function () {
       var seasonId = _ref4.seasonId,
           scoringPeriodId = _ref4.scoringPeriodId;
 
-      var route = this.constructor._buildRoute({
-        base: this._getLeagueSeasonBaseRoute(seasonId),
-        params: "?scoringPeriodId=".concat(scoringPeriodId, "&view=kona_player_info")
+      var route = this._buildLeagueSeasonRouteWithParams(seasonId, {
+        scoringPeriodId: scoringPeriodId,
+        view: 'kona_player_info'
       });
 
-      return axios__WEBPACK_IMPORTED_MODULE_4___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
-        var data = lodash_get__WEBPACK_IMPORTED_MODULE_3___default()(response.data, 'players');
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
+        var data = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'players');
 
-        return lodash_map__WEBPACK_IMPORTED_MODULE_1___default()(data, function (player) {
-          return _free_agent_player_free_agent_player__WEBPACK_IMPORTED_MODULE_6__["default"].buildFromServer(player, {
+        return lodash_map__WEBPACK_IMPORTED_MODULE_2___default()(data, function (player) {
+          return _free_agent_player_free_agent_player__WEBPACK_IMPORTED_MODULE_7__["default"].buildFromServer(player, {
             leagueId: _this3.leagueId,
             seasonId: seasonId
           });
@@ -11752,9 +11821,12 @@ function () {
     }
     /**
      * Returns an array of Team objects representing each fantasy football team in the FF league.
+     *
      * NOTE: Does not include roster data
-     * @param  {number} options.seasonId
-     * @return {Team[]}
+     *
+     * @param  {object} options Required options object.
+     * @param  {number} options.seasonId The season to grab data from.
+     * @returns {Team[]} The list of teams
      */
 
   }, {
@@ -11764,27 +11836,21 @@ function () {
 
       var seasonId = _ref5.seasonId;
 
-      var route = this.constructor._buildRoute({
-        base: this._getLeagueSeasonBaseRoute(seasonId),
-        params: '?view=mTeam'
+      var teamRoute = this._buildLeagueSeasonRouteWithParams(seasonId, {
+        view: 'mTeam'
       });
 
-      return axios__WEBPACK_IMPORTED_MODULE_4___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
-        var data = lodash_get__WEBPACK_IMPORTED_MODULE_3___default()(response.data, 'teams');
-
-        return lodash_map__WEBPACK_IMPORTED_MODULE_1___default()(data, function (team) {
-          return _team_team__WEBPACK_IMPORTED_MODULE_10__["default"].buildFromServer(team, {
-            leagueId: _this4.leagueId,
-            seasonId: seasonId
-          });
-        });
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(teamRoute, this._buildAxiosConfig()).then(function (response) {
+        return _this4._buildTeamsFromServerData(lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'teams'), seasonId);
       });
     }
     /**
      * Returns an array of Team object representing each fantasy football team in the FF league.
-     * @param  {number} options.seasonId
-     * @param  {number} options.scoringPeriodId
-     * @return {Team[]}
+     *
+     * @param  {object} options Required options object.
+     * @param  {number} options.seasonId The season to grab data from.
+     * @param  {number} options.scoringPeriodId The scoring period in which to grab teams from.
+     * @returns {Team[]} The list of teams.
      */
 
   }, {
@@ -11795,27 +11861,24 @@ function () {
       var seasonId = _ref6.seasonId,
           scoringPeriodId = _ref6.scoringPeriodId;
 
-      var route = this.constructor._buildRoute({
-        base: this._getLeagueSeasonBaseRoute(seasonId),
-        params: "?scoringPeriodId=".concat(scoringPeriodId, "&view=mRoster&view=mTeam")
+      var teamRosterRoute = this._buildLeagueSeasonRouteWithParams(seasonId, {
+        scoringPeriodId: scoringPeriodId,
+        view: ['mRoster', 'mTeam']
       });
 
-      return axios__WEBPACK_IMPORTED_MODULE_4___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
-        var data = lodash_get__WEBPACK_IMPORTED_MODULE_3___default()(response.data, 'teams');
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(teamRosterRoute, this._buildAxiosConfig()).then(function (response) {
+        var teamsWithRosters = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'teams');
 
-        return lodash_map__WEBPACK_IMPORTED_MODULE_1___default()(data, function (team) {
-          return _team_team__WEBPACK_IMPORTED_MODULE_10__["default"].buildFromServer(team, {
-            leagueId: _this5.leagueId,
-            seasonId: seasonId
-          });
-        });
+        return _this5._buildTeamsFromServerData(teamsWithRosters, seasonId);
       });
     }
     /**
      * Returns all NFL games that occur in the passed timeframe. NOTE: Date format must be "YYYYMMDD".
+     *
+     * @param  {object} options Required options object.
      * @param  {string} options.startDate Must be in "YYYYMMDD" format.
      * @param  {string} options.endDate   Must be in "YYYYMMDD" format.
-     * @return {NFLGame[]}
+     * @returns {NFLGame[]} The list of NFL games.
      */
 
   }, {
@@ -11833,18 +11896,20 @@ function () {
         baseURL: 'https://site.api.espn.com/'
       });
 
-      return axios__WEBPACK_IMPORTED_MODULE_4___default.a.get(route, axiosConfig).then(function (response) {
-        var data = lodash_get__WEBPACK_IMPORTED_MODULE_3___default()(response.data, 'events');
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(route, axiosConfig).then(function (response) {
+        var data = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'events');
 
-        return lodash_map__WEBPACK_IMPORTED_MODULE_1___default()(data, function (game) {
-          return _nfl_game_nfl_game__WEBPACK_IMPORTED_MODULE_9__["default"].buildFromServer(game);
+        return lodash_map__WEBPACK_IMPORTED_MODULE_2___default()(data, function (game) {
+          return _nfl_game_nfl_game__WEBPACK_IMPORTED_MODULE_10__["default"].buildFromServer(game);
         });
       });
     }
     /**
      * Returns info on an ESPN fantasy football league
-     * @param  {number} options.seasonId
-     * @return {League}
+     *
+     * @param   {object} options Required options object.
+     * @param   {number} options.seasonId The season to grab data from.
+     * @returns {League} The league info.
      */
 
   }, {
@@ -11854,15 +11919,14 @@ function () {
 
       var seasonId = _ref8.seasonId;
 
-      var route = this.constructor._buildRoute({
-        base: this._getLeagueSeasonBaseRoute(seasonId),
-        params: '?view=mSettings'
+      var route = this._buildLeagueSeasonRouteWithParams(seasonId, {
+        view: 'mSettings'
       });
 
-      return axios__WEBPACK_IMPORTED_MODULE_4___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
-        var data = lodash_get__WEBPACK_IMPORTED_MODULE_3___default()(response.data, 'settings');
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
+        var data = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'settings');
 
-        return _league_league__WEBPACK_IMPORTED_MODULE_7__["default"].buildFromServer(data, {
+        return _league_league__WEBPACK_IMPORTED_MODULE_8__["default"].buildFromServer(data, {
           leagueId: _this6.leagueId,
           seasonId: seasonId
         });
@@ -11870,8 +11934,10 @@ function () {
     }
     /**
      * Returns all matchup scores for a season.
-     * @param  {number} options.seasonId The season in which the matchups occur.
-     * @return {MatchupScore[]}
+     *
+     * @param   {object} options Required options object.
+     * @param   {number} options.seasonId The season to grab data from.
+     * @returns {MatchupScore[]} The list of matchup scores.
      */
 
   }, {
@@ -11880,27 +11946,15 @@ function () {
       var _this7 = this;
 
       var seasonId = _ref9.seasonId;
-
-      var route = this.constructor._buildRoute({
-        base: this._getLeagueSeasonBaseRoute(seasonId),
-        params: '?view=mMatchupScore'
-      });
-
-      return axios__WEBPACK_IMPORTED_MODULE_4___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
-        var data = lodash_get__WEBPACK_IMPORTED_MODULE_3___default()(response.data, 'schedule');
-
-        return lodash_map__WEBPACK_IMPORTED_MODULE_1___default()(data, function (matchup) {
-          return _matchup_score_matchup_score__WEBPACK_IMPORTED_MODULE_8__["default"].buildFromServer(matchup, {
-            leagueId: _this7.leagueId,
-            seasonId: seasonId
-          });
-        });
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(this._buildLeagueSeasonMatchupScoreRoute(seasonId), this._buildAxiosConfig()).then(function (response) {
+        return _this7._buildMatchupScoresFromServerData(lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'schedule'), seasonId);
       });
     }
     /**
      * Correctly builds an axios config with cookies, if set on the instance
-     * @param  {object} config An axios config.
-     * @return {object}        An axios config with cookies added if set on instance
+     *
+     * @param   {object} config An axios config.
+     * @returns {object} An axios config with cookies added if set on instance
      * @private
      */
 
@@ -11911,7 +11965,7 @@ function () {
         var headers = {
           Cookie: "espn_s2=".concat(this.espnS2, "; SWID=").concat(this.SWID, ";")
         };
-        return lodash_merge__WEBPACK_IMPORTED_MODULE_0___default()({}, config, {
+        return lodash_merge__WEBPACK_IMPORTED_MODULE_1___default()({}, config, {
           headers: headers,
           withCredentials: true
         });
@@ -11919,10 +11973,103 @@ function () {
 
       return config;
     }
+    /**
+     * Correctly builds a base route for a league season
+     *
+     * @param  {number} seasonId The season to construct the route for.
+     * @returns {string} A base route for a league season
+     * @private
+     */
+
   }, {
     key: "_getLeagueSeasonBaseRoute",
     value: function _getLeagueSeasonBaseRoute(seasonId) {
       return "".concat(seasonId, "/segments/0/leagues/").concat(this.leagueId);
+    }
+    /**
+     * Correctly builds a route for a league season with parameters
+     *
+     * @param  {number} seasonId The season to construct the route for.
+     * @param  {object} params Key/value parameters to append to the base route
+     * @returns {string} A route for a league season with parameters
+     * @private
+     */
+
+  }, {
+    key: "_buildLeagueSeasonRouteWithParams",
+    value: function _buildLeagueSeasonRouteWithParams(seasonId, params) {
+      var str = [];
+      Object.keys(params).forEach(function (p) {
+        if (!lodash_isArray__WEBPACK_IMPORTED_MODULE_0___default()(params[p])) {
+          str.push("".concat(encodeURIComponent(p), "=").concat(encodeURIComponent(params[p])));
+          return;
+        }
+
+        params[p].forEach(function (v) {
+          str.push("".concat(encodeURIComponent(p), "=").concat(encodeURIComponent(v)));
+        });
+      });
+      return this.constructor._buildRoute({
+        base: this._getLeagueSeasonBaseRoute(seasonId),
+        params: "?".concat(str.join('&'))
+      });
+    }
+    /**
+     * Correctly builds a route for a league season with parameters
+     *
+     * @param  {number} seasonId The season to construct the route for.
+     * @returns {string} A route for matchup scores in a league season
+     * @private
+     */
+
+  }, {
+    key: "_buildLeagueSeasonMatchupScoreRoute",
+    value: function _buildLeagueSeasonMatchupScoreRoute(seasonId) {
+      return this._buildLeagueSeasonRouteWithParams(seasonId, {
+        view: 'mMatchupScore'
+      });
+    }
+    /**
+     * Build MatchupScore objects from server data
+     *
+     * @param {Array} data Matchup score server data
+     * @param {number} seasonId The season for which to build MatchupScores
+     * @returns {MatchupScore[]} List of MatchupScores
+     * @private
+     */
+
+  }, {
+    key: "_buildMatchupScoresFromServerData",
+    value: function _buildMatchupScoresFromServerData(data, seasonId) {
+      var _this8 = this;
+
+      return lodash_map__WEBPACK_IMPORTED_MODULE_2___default()(data, function (matchup) {
+        return _matchup_score_matchup_score__WEBPACK_IMPORTED_MODULE_9__["default"].buildFromServer(matchup, {
+          leagueId: _this8.leagueId,
+          seasonId: seasonId
+        });
+      });
+    }
+    /**
+     * Build Team objects from server data
+     *
+     * @param {Array} data Team server data
+     * @param {number} seasonId The season for which to build Teams
+     * @returns {Team[]} List of Teams
+     * @private
+     */
+
+  }, {
+    key: "_buildTeamsFromServerData",
+    value: function _buildTeamsFromServerData(data, seasonId) {
+      var _this9 = this;
+
+      return lodash_map__WEBPACK_IMPORTED_MODULE_2___default()(data, function (teamWithRoster) {
+        return _team_team__WEBPACK_IMPORTED_MODULE_11__["default"].buildFromServer(teamWithRoster, {
+          leagueId: _this9.leagueId,
+          seasonId: seasonId
+        });
+      });
     }
   }], [{
     key: "_buildRoute",
@@ -12158,7 +12305,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _base_classes_base_object_base_object__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../base-classes/base-object/base-object */ "./src/base-classes/base-object/base-object.js");
 /* harmony import */ var _player_player__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ../player/player */ "./src/player/player.js");
 /* harmony import */ var _player_stats_player_stats__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ../player-stats/player-stats */ "./src/player-stats/player-stats.js");
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -12177,10 +12324,12 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
 
 
 
+/* global PlayerStats */
+
 /**
  * Represents a player and their raw stats.
  *
- * @extends {BaseObject}
+ * @augments {BaseObject}
  */
 
 var FreeAgentPlayer =
@@ -12302,7 +12451,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -12320,10 +12469,12 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
 
 
 
+/* global DRAFT_TYPE, LINEUP_LOCK_TIMES */
+
 /**
  * Represents basic information about an ESPN fantasy football league.
  *
- * @extends {BaseObject}
+ * @augments {BaseObject}
  */
 
 var League =
@@ -12400,12 +12551,8 @@ _defineProperty(League, "responseMap", {
 
 "use strict";
 __webpack_require__.r(__webpack_exports__);
-/* harmony import */ var lodash_get__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! lodash/get */ "./node_modules/lodash/get.js");
-/* harmony import */ var lodash_get__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(lodash_get__WEBPACK_IMPORTED_MODULE_0__);
-/* harmony import */ var _base_classes_base_object_base_object__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ../base-classes/base-object/base-object */ "./src/base-classes/base-object/base-object.js");
-
-
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+/* harmony import */ var _base_classes_base_object_base_object__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../base-classes/base-object/base-object */ "./src/base-classes/base-object/base-object.js");
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -12425,7 +12572,7 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
 /**
  * Represents a matchup score for a week.
  *
- * @extends {BaseObject}
+ * @augments {BaseObject}
  */
 
 var MatchupScore =
@@ -12440,25 +12587,17 @@ function (_BaseObject) {
   }
 
   return MatchupScore;
-}(_base_classes_base_object_base_object__WEBPACK_IMPORTED_MODULE_1__["default"]);
+}(_base_classes_base_object_base_object__WEBPACK_IMPORTED_MODULE_0__["default"]);
 
 _defineProperty(MatchupScore, "displayName", 'MatchupScore');
 
 _defineProperty(MatchupScore, "responseMap", {
   matchupPeriodId: 'matchupPeriodId',
-  homeScore: {
-    key: 'home',
-    manualParse: function manualParse(responseData) {
-      return lodash_get__WEBPACK_IMPORTED_MODULE_0___default()(responseData, 'totalPointsLive') || lodash_get__WEBPACK_IMPORTED_MODULE_0___default()(responseData, 'totalPoints');
-    }
-  },
+  homeScore: 'home.totalPoints',
+  homeScoreLive: 'home.totalPointsLive',
   homeTeamId: 'home.teamId',
-  awayScore: {
-    key: 'away',
-    manualParse: function manualParse(responseData) {
-      return lodash_get__WEBPACK_IMPORTED_MODULE_0___default()(responseData, 'totalPointsLive') || lodash_get__WEBPACK_IMPORTED_MODULE_0___default()(responseData, 'totalPoints');
-    }
-  },
+  awayScore: 'away.totalPoints',
+  awayScoreLive: 'away.totalPointsLive',
   awayTeamId: 'away.teamId'
 });
 
@@ -12487,7 +12626,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -12511,7 +12650,8 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
 
 /**
  * Represents an NFL game between two NFL teams.
- * @extends {BaseObject}
+ *
+ * @augments {BaseObject}
  */
 
 var NFLGame =
@@ -12541,7 +12681,7 @@ function (_BaseObject) {
     /**
      * @typedef {object} NFLGame~NFLGameMap
      *
-     * @property {date} startTime The date and time when the game starts in Eastern Time.
+     * @property {Date} startTime The date and time when the game starts in Eastern Time.
      * @property {number} quarter The quarter the game is in.
      * @property {string} clock The current game clock formatted as MM:SS.
      * @property {string} odds The odds for the game formatted as "TEAM_ABBREV LINE"
@@ -12554,8 +12694,8 @@ function (_BaseObject) {
      */
 
     /**
-      * @type {NFLGame~NFLGameMap}
-      */
+     * @type {NFLGame~NFLGameMap}
+     */
     value: function _buildTeamAttribute(teamResponseData) {
       return {
         id: lodash_toSafeInteger__WEBPACK_IMPORTED_MODULE_0___default()(teamResponseData.id),
@@ -12638,7 +12778,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -12662,7 +12802,7 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
  * The stat map is not comprehensive, but should cover normal standard and PPR scoring rules. The
  * largest missing piece is IDP scoring.
  *
- * @extends {BaseObject}
+ * @augments {BaseObject}
  */
 
 var PlayerStats =
@@ -12781,7 +12921,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -12803,10 +12943,12 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
 
 
 
+/* global INJURY_STATUSES, PLAYER_AVAILABILITY_STATUSES */
+
 /**
  * Represents an NFL player. This model is not directly associated with any fantasy team.
  *
- * @extends {BaseCacheableObject}
+ * @augments {BaseCacheableObject}
  */
 
 var Player =
@@ -12831,8 +12973,9 @@ function (_BaseCacheableObject) {
 
     /**
      * Returns valid id params when 'id' and 'seasonId' are passed.
-     * @param  {Object} params
-     * @return {Object|undefined}
+     *
+     * @param   {object} params The params to use.
+     * @returns {object|undefined} An object containing the params, or `undefined`.
      */
     value: function getIDParams() {
       var params = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
@@ -12849,7 +12992,7 @@ function (_BaseCacheableObject) {
     /**
      * @typedef {object} Player~PlayerMap
      *
-     * @property {number} id
+     * @property {number} id The id of the player in the ESPN universe.
      * @property {string} firstName The first name of the player.
      * @property {string} lastName The last name of the player.
      * @property {string} fullName The full name of the player.
@@ -12972,7 +13115,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -12997,7 +13140,7 @@ function _defineProperty(obj, key, value) { if (key in obj) { Object.definePrope
 /**
  * Represents a fantasy football team in a league.
  *
- * @extends {BaseCacheableObject}
+ * @augments {BaseCacheableObject}
  */
 
 var Team =
@@ -13023,8 +13166,9 @@ function (_BaseCacheableObject) {
 
     /**
      * Returns valid id params when 'id', `leagueId`, and 'seasonId' are passed.
-     * @param  {Object} params
-     * @return {Object|undefined}
+     *
+     * @param   {object} params The params to use.
+     * @returns {object|undefined} An object containing the params, or `undefined`.
      */
     value: function getIDParams() {
       var params = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
@@ -13040,10 +13184,10 @@ function (_BaseCacheableObject) {
       return undefined;
     }
     /**
-     * @typedef {object} Team~TeamMap
+     * @typedef  {object} Team~TeamMap
      *
-     * @property {number} id
-     * @property {stirng} abbreviation The team's abbreviation.
+     * @property {number} id The id of the team in the ESPN universe.
+     * @property {string} abbreviation The team's abbreviation.
      * @property {string} name The team's name.
      * @property {string} logoURL The URL for the team's uploaded logo.
      * @property {number} wavierRank The team's position in the current wavier order.
