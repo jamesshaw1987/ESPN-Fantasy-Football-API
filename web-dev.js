@@ -11148,7 +11148,7 @@ _defineProperty(League, "responseMap", {
     key: 'status',
     manualParse: function manualParse(responseData) {
       return {
-        currentMatchupPeriodId: responseData.currentMatchupPeriodId
+        currentMatchupPeriod: responseData.currentMatchupPeriod
       };
     }
   }
