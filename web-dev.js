@@ -11142,6 +11142,14 @@ _defineProperty(League, "responseMap", {
         numberOfPlayoffTeams: responseData.playoffTeamCount
       };
     }
+  },
+  status: {
+    key: 'status',
+    manualParse: function manualParse(responseData) {
+      return {
+        currentMatchupPeriodId: responseData.currentMatchupPeriodId
+      };
+    }
   }
 });
 
