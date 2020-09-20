@@ -10533,6 +10533,7 @@ function () {
       return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
         var data = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'settings');
 
+        data.status = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'status');
         return _league_league__WEBPACK_IMPORTED_MODULE_8__["default"].buildFromServer(data, {
           leagueId: _this6.leagueId,
           seasonId: seasonId
