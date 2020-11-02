@@ -11808,7 +11808,24 @@ function () {
         view: 'kona_player_info'
       });
 
-      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(route, this._buildAxiosConfig()).then(function (response) {
+      var config = this._buildAxiosConfig({
+        headers: {
+          'x-fantasy-filter': JSON.stringify({
+            players: {
+              filterStatus: {
+                value: ['FREEAGENT', 'WAIVERS']
+              },
+              limit: 2000,
+              sortPercOwned: {
+                sortAsc: false,
+                sortPriority: 1
+              }
+            }
+          })
+        }
+      });
+
+      return axios__WEBPACK_IMPORTED_MODULE_5___default.a.get(route, config).then(function (response) {
         var data = lodash_get__WEBPACK_IMPORTED_MODULE_4___default()(response.data, 'players');
 
         return lodash_map__WEBPACK_IMPORTED_MODULE_2___default()(data, function (player) {
@@ -12027,7 +12044,7 @@ function () {
     key: "_buildLeagueSeasonMatchupScoreRoute",
     value: function _buildLeagueSeasonMatchupScoreRoute(seasonId) {
       return this._buildLeagueSeasonRouteWithParams(seasonId, {
-        view: 'mMatchupScore'
+        view: ['mMatchupScore', 'mScoreboard']
       });
     }
     /**
@@ -12604,9 +12621,11 @@ _defineProperty(MatchupScore, "responseMap", {
   matchupPeriodId: 'matchupPeriodId',
   homeScore: 'home.totalPoints',
   homeScoreLive: 'home.totalPointsLive',
+  homeScoreProjected: 'home.totalProjectedPointsLive',
   homeTeamId: 'home.teamId',
   awayScore: 'away.totalPoints',
   awayScoreLive: 'away.totalPointsLive',
+  awayScoreProjected: 'away.totalProjectedPointsLive',
   awayTeamId: 'away.teamId'
 });
 
