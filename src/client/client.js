@@ -2,11 +2,14 @@ import axios from 'axios';
 import _ from 'lodash';
 
 import Boxscore from '../boxscore/boxscore';
+import DraftPlayer from '../draft-player/draft-player';
 import FreeAgentPlayer from '../free-agent-player/free-agent-player';
 import League from '../league/league';
 import MatchupScore from '../matchup-score/matchup-score';
 import NFLGame from '../nfl-game/nfl-game';
 import Team from '../team/team';
+
+import { flattenObjectSansNumericKeys } from '../utils';
 
 axios.defaults.baseURL = 'https://fantasy.espn.com/apis/v3/games/ffl/seasons/';
 
@@ -17,6 +20,19 @@ axios.defaults.baseURL = 'https://fantasy.espn.com/apis/v3/games/ffl/seasons/';
  * @class
  */
 class Client {
+  static _validateV3Params(seasonId, route, alternateRoute = '') {
+    if (seasonId < 2018) {
+      throw new Error(`Cannot call ${route} with a season ID prior to 2018 due to ESPN limitations (see README.md#espn-databases-and-data-storage for more).${alternateRoute ? `Call Client#${alternateRoute} for historical data instead.` : ''}`);
+    }
+  }
+
+  static _validateHistoricalParams(seasonId, route, alternateRoute) {
+    if (seasonId >= 2018) {
+      // Historical routes should always have a modern endpoint, so alternateRoute is required.
+      throw new Error(`Cannot call ${route} with a season ID after 2017 due to ESPN limitations (see README.md#espn-databases-and-data-storage for more). Call Client#${alternateRoute} for new data instead.`);
+    }
+  }
+
   constructor(options = {}) {
     this.leagueId = options.leagueId;
 
@@ -24,7 +40,7 @@ class Client {
   }
 
   /**
-   * Set cookies from ESPN for interacting with private leagues in NodeJS. Both cookie smust be
+   * Set cookies from ESPN for interacting with private leagues in NodeJS. Both cookies must be
    * provided to be set. See the README for instructions on how to find these cookies.
    *
    * @param {object} options Required options object.
@@ -51,19 +67,78 @@ class Client {
    * @returns {Boxscore[]} All boxscores for the week
    */
   getBoxscoreForWeek({ seasonId, matchupPeriodId, scoringPeriodId }) {
-    const route = this._buildLeagueSeasonRouteWithParams(
+    this.constructor._validateV3Params(
       seasonId,
-      { scoringPeriodId, view: ['mMatchup', 'mMatchupScore'] }
+      'getBoxscoreForWeek',
+      'getHistoricalScoreboardForWeek'
     );
+
+    const route = this.constructor._buildRoute({
+      base: `${seasonId}/segments/0/leagues/${this.leagueId}`,
+      params: `?view=mMatchup&view=mMatchupScore&scoringPeriodId=${scoringPeriodId}`
+    });
 
     return axios.get(route, this._buildAxiosConfig()).then((response) => {
       const schedule = _.get(response.data, 'schedule');
       const data = _.filter(schedule, { matchupPeriodId });
 
       return _.map(data, (matchup) => (
-        Boxscore.buildFromServer(matchup, { leagueId: this.leagueId, seasonId })
+        Boxscore.buildFromServer(matchup, { leagueId: this.leagueId, seasonId, scoringPeriodId })
       ));
     });
+  }
+
+  /**
+   * Returns all draft picks for a given season.
+   *
+   * @param  {object} options Required options object.
+   * @param  {number} options.seasonId The season in which the draft occurs.
+   * @param  {number} [options.scoringPeriodId] The scoring period to pull player data from.
+   *   Defaults to preseason.
+   * @returns {DraftPlayer[]} All drafted players sorted in draft order
+   */
+  getDraftInfo({ seasonId, scoringPeriodId = 0 }) {
+    this.constructor._validateV3Params(seasonId, 'getDraftInfo');
+
+    const draftRoute = this.constructor._buildRoute({
+      base: `${seasonId}/segments/0/leagues/${this.leagueId}`,
+      params:
+      `?view=mDraftDetail&view=mMatchup&view=mMatchupScore&scoringPeriodId=${scoringPeriodId}`
+    });
+    const playerRoute = this.constructor._buildRoute({
+      base: `${seasonId}/segments/0/leagues/${this.leagueId}`,
+      params: `?scoringPeriodId=${scoringPeriodId}&view=kona_player_info`
+    });
+
+    return Promise.all([
+      axios.get(draftRoute, this._buildAxiosConfig()),
+      axios.get(playerRoute, this._buildAxiosConfig({
+        headers: {
+          'x-fantasy-filter': JSON.stringify({
+            players: {
+              limit: 3000,
+              sortPercOwned: {
+                sortAsc: false,
+                sortPriority: 1
+              }
+            }
+          })
+        }
+      }))
+    ]).then(([draftResponse, playerResponse]) => (
+      _.map(draftResponse.data.draftDetail.picks, (draftPick) => {
+        const playerInfo = _.find(
+          playerResponse.data.players,
+          (player) => player.player.id === draftPick.playerId
+        );
+
+        const data = {
+          ...draftPick,
+          ...flattenObjectSansNumericKeys(playerInfo)
+        };
+
+        return DraftPlayer.buildFromServer(data, { seasonId, scoringPeriodId });
+      })));
   }
 
   /**
@@ -83,6 +158,12 @@ class Client {
    * @returns {Boxscore[]} All boxscores for the week
    */
   getHistoricalScoreboardForWeek({ seasonId, matchupPeriodId, scoringPeriodId }) {
+    this.constructor._validateHistoricalParams(
+      seasonId,
+      'getHistoricalScoreboardForWeek',
+      'getBoxscoreForWeek'
+    );
+
     const route = this.constructor._buildRoute({
       base: `${this.leagueId}`,
       params: `?scoringPeriodId=${scoringPeriodId}&seasonId=${seasonId}` +
@@ -97,7 +178,7 @@ class Client {
       const data = _.filter(schedule, { matchupPeriodId });
 
       return _.map(data, (matchup) => (
-        Boxscore.buildFromServer(matchup, { leagueId: this.leagueId, seasonId })
+        Boxscore.buildFromServer(matchup, { leagueId: this.leagueId, seasonId, scoringPeriodId })
       ));
     });
   }
@@ -113,7 +194,12 @@ class Client {
    * @returns {FreeAgentPlayer[]} The list of free agents.
    */
   getFreeAgents({ seasonId, scoringPeriodId }) {
-    const route = this._buildLeagueSeasonRouteWithParams(seasonId, { scoringPeriodId, view: 'kona_player_info' });
+    this.constructor._validateV3Params(seasonId, 'getFreeAgents');
+
+    const route = this.constructor._buildRoute({
+      base: `${seasonId}/segments/0/leagues/${this.leagueId}`,
+      params: `?scoringPeriodId=${scoringPeriodId}&view=kona_player_info`
+    });
 
     const config = this._buildAxiosConfig({
       headers: {
@@ -135,7 +221,11 @@ class Client {
     return axios.get(route, config).then((response) => {
       const data = _.get(response.data, 'players');
       return _.map(data, (player) => (
-        FreeAgentPlayer.buildFromServer(player, { leagueId: this.leagueId, seasonId })
+        FreeAgentPlayer.buildFromServer(player, {
+          leagueId: this.leagueId,
+          seasonId,
+          scoringPeriodId
+        })
       ));
     });
   }
@@ -166,15 +256,66 @@ class Client {
    * @returns {Team[]} The list of teams.
    */
   getTeamsAtWeek({ seasonId, scoringPeriodId }) {
-    const teamRosterRoute = this._buildLeagueSeasonRouteWithParams(
+    this.constructor._validateV3Params(seasonId, 'getTeamsAtWeek', 'getHistoricalTeamsAtWeek');
+
+    const route = this.constructor._buildRoute({
+      base: `${seasonId}/segments/0/leagues/${this.leagueId}`,
+      params: `?scoringPeriodId=${scoringPeriodId}&view=mRoster&view=mTeam`
+    });
+
+    return axios.get(route, this._buildAxiosConfig()).then((response) => (
+      this._parseTeamResponse(response.data, seasonId, scoringPeriodId)
+    ));
+  }
+
+  /**
+   * Returns an array of Team object representing each fantasy football team in a pre-2018 FF
+   * league.
+   *
+   * NOTE: This route will error for the current season, as ESPN only exposes this data for previous
+   * seasons.
+   *
+   * @param  {object} options Required options object.
+   * @param  {number} options.seasonId The season to grab data from.  This value must be before 2018
+   * @param  {number} options.scoringPeriodId The scoring period in which to grab teams from.
+   * @returns {Team[]} The list of teams.
+   */
+  getHistoricalTeamsAtWeek({ seasonId, scoringPeriodId }) {
+    this.constructor._validateHistoricalParams(
       seasonId,
-      { scoringPeriodId, view: ['mRoster', 'mTeam'] }
+      'getHistoricalTeamsAtWeek',
+      'getTeamsAtWeek'
     );
 
-    return axios.get(teamRosterRoute, this._buildAxiosConfig()).then((response) => {
-      const teamsWithRosters = _.get(response.data, 'teams');
-      return this._buildTeamsFromServerData(teamsWithRosters, seasonId);
+    const route = this.constructor._buildRoute({
+      base: `${this.leagueId}`,
+      params: `?scoringPeriodId=${scoringPeriodId}&seasonId=${seasonId}` +
+        '&view=mMatchupScore&view=mScoreboard&view=mSettings&view=mTopPerformers&view=mTeam&view=mRoster'
     });
+
+    const axiosConfig = this._buildAxiosConfig({
+      baseURL: 'https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/'
+    });
+
+    return axios.get(route, axiosConfig).then((response) => (
+      // Data returns an array for historical teams (??)
+      this._parseTeamResponse(response.data[0], seasonId, scoringPeriodId)
+    ));
+  }
+
+  _parseTeamResponse(responseData, seasonId, scoringPeriodId) {
+    // Join member (owner) information with team data before dumping into builder
+    const teams = _.get(responseData, 'teams');
+    const members = _.get(responseData, 'members');
+
+    const mergedData = _.map(teams, (team) => {
+      const owner = members.find((member) => member.id === team.primaryOwner);
+      return { owner, ...team }; // Don't spread owner to prevent id and other attributes clashing
+    });
+
+    return _.map(mergedData, (team) => (
+      Team.buildFromServer(team, { leagueId: this.leagueId, seasonId, scoringPeriodId })
+    ));
   }
 
   /**
@@ -188,7 +329,7 @@ class Client {
   getNFLGamesForPeriod({ startDate, endDate }) {
     const route = this.constructor._buildRoute({
       base: 'apis/fantasy/v2/games/ffl/games',
-      params: `?dates=${startDate}-${endDate}&pbpOnly=true`
+      params: `?dates=${startDate}-${endDate}&pbpOnly=true` // cspell:disable-line pbp
     });
 
     const axiosConfig = this._buildAxiosConfig({ baseURL: 'https://site.api.espn.com/' });
@@ -207,11 +348,22 @@ class Client {
    * @returns {League} The league info.
    */
   getLeagueInfo({ seasonId }) {
-    const route = this._buildLeagueSeasonRouteWithParams(seasonId, { view: 'mSettings' });
+    this.constructor._validateV3Params(seasonId, 'getLeagueInfo');
+
+    const route = this.constructor._buildRoute({
+      base: `${seasonId}/segments/0/leagues/${this.leagueId}`,
+      params: '?view=mSettings'
+    });
 
     return axios.get(route, this._buildAxiosConfig()).then((response) => {
-      const data = _.get(response.data, 'settings');
-      data.status = _.get(response.data, 'status');
+      const settingsData = _.get(response.data, 'settings');
+      const statusData = _.get(response.data, 'status');
+      const data = {
+        currentMatchupPeriodId: statusData.currentMatchupPeriod,
+        currentScoringPeriodId: statusData.latestScoringPeriod,
+        ...settingsData
+      };
+
       return League.buildFromServer(data, { leagueId: this.leagueId, seasonId });
     });
   }

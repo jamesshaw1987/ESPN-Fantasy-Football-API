@@ -39,11 +39,12 @@ class Team extends BaseCacheableObject {
   }
 
   /**
-   * @typedef  {object} Team~TeamMap
+   * @typedef  {object} TeamMap
    *
    * @property {number} id The id of the team in the ESPN universe.
    * @property {string} abbreviation The team's abbreviation.
    * @property {string} name The team's name.
+   * @property {string} ownerName The team's primary owner's name
    * @property {string} logoURL The URL for the team's uploaded logo.
    * @property {number} wavierRank The team's position in the current wavier order.
    *
@@ -80,19 +81,23 @@ class Team extends BaseCacheableObject {
    */
 
   /**
-   * @type {Team~TeamMap}
+   * @type {TeamMap}
    */
   static responseMap = {
     id: 'id',
     abbreviation: 'abbrev',
     name: 'name',
+    ownerName: {
+      key: 'owner',
+      manualParse: ({ firstName, lastName }) => `${_.trim(firstName)} ${_.trim(lastName)}`
+    },
     logoURL: 'logo',
     wavierRank: 'wavierRank',
 
     roster: {
       key: 'roster.entries',
       isArray: true,
-      manualParse: (responseData, data, constructorParams) => _.map(
+      manualParse: (responseData, data, rawData, constructorParams) => _.map(
         responseData,
         (playerData) => Player.buildFromServer(playerData.playerPoolEntry, constructorParams)
       )
