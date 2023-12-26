@@ -242,9 +242,9 @@ class Client {
   getTeams({ seasonId }) {
     const teamRoute = this._buildLeagueSeasonRouteWithParams(seasonId, { view: 'mTeam' });
 
-    return axios.get(teamRoute, this._buildAxiosConfig()).then(
-      (response) => this._buildTeamsFromServerData(_.get(response.data, 'teams'), seasonId)
-    );
+    return axios.get(teamRoute, this._buildAxiosConfig()).then((response) => (
+      this._parseTeamResponse(response.data, seasonId)
+    ));
   }
 
   /**
@@ -461,20 +461,6 @@ class Client {
   _buildMatchupScoresFromServerData(data, seasonId) {
     return _.map(data, (matchup) => (
       MatchupScore.buildFromServer(matchup, { leagueId: this.leagueId, seasonId })
-    ));
-  }
-
-  /**
-   * Build Team objects from server data
-   *
-   * @param {Array} data Team server data
-   * @param {number} seasonId The season for which to build Teams
-   * @returns {Team[]} List of Teams
-   * @private
-   */
-  _buildTeamsFromServerData(data, seasonId) {
-    return _.map(data, (teamWithRoster) => (
-      Team.buildFromServer(teamWithRoster, { leagueId: this.leagueId, seasonId })
     ));
   }
 

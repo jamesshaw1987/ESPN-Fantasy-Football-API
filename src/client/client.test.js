@@ -717,10 +717,24 @@ describe('Client', () => {
         test('maps response data into Teams', async () => {
           const response = {
             data: {
+              members: [{
+                firstName: 'Owner',
+                id: '{BAD5167F-96F5-40FF-AFF0-4D2CC92F4057}',
+                lastName: 'Dude'
+              }, {
+                firstName: 'Owner',
+                id: '{BAD5167F-96F5-40FF-AFF0-4D2CC92F4058}',
+                lastName: 'Dude'
+              }, {
+                firstName: 'Owner',
+                id: '{BAD5167F-96F5-40FF-AFF0-4D2CC92F4059}',
+                lastName: 'Dude'
+              }],
               teams: [{
                 abbrev: 'SWAG',
                 location: 'First ',
                 nickname: 'Last',
+                primaryOwner: '{BAD5167F-96F5-40FF-AFF0-4D2CC92F4058}',
                 record: {
                   overall: {
                     wins: 3,
@@ -731,6 +745,7 @@ describe('Client', () => {
                 abbrev: 'JS',
                 location: 'First ',
                 nickname: 'Last',
+                primaryOwner: '{BAD5167F-96F5-40FF-AFF0-4D2CC92F4059}',
                 record: {
                   overall: {
                     wins: 5,
@@ -741,6 +756,7 @@ describe('Client', () => {
                 abbrev: 'SWAG',
                 location: 'First ',
                 nickname: 'Last',
+                primaryOwner: '{BAD5167F-96F5-40FF-AFF0-4D2CC92F4057}',
                 record: {
                   overall: {
                     wins: 11,
