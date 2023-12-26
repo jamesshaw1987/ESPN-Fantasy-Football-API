@@ -1,22 +1,15 @@
 import _ from 'lodash';
 
-import BaseObject from '../base-classes/base-object/base-object';
-
 import { slotCategoryIdToPositionMap } from '../constants.js';
 
 import League from './league';
 
 describe('League', () => {
-  test('extends BaseObject', () => {
-    expect(new League()).toBeInstanceOf(BaseObject);
-  });
-
   describe('responseMap', () => {
     let data;
     let draftSettings;
     let rosterSettings;
     let scheduleSettings;
-    let status;
 
     beforeEach(() => {
       draftSettings = {
@@ -45,15 +38,21 @@ describe('League', () => {
         playoffTeamCount: 4
       };
 
-      status = {
-        currentMatchupPeriod: 2
-      };
-
       data = {
         draftSettings,
         rosterSettings,
         scheduleSettings,
-        status
+        scoringSettings: {
+          scoringItems: [{
+            points: 1, statId: 0
+          }, {
+            points: 4, statId: 1
+          }, {
+            points: 6, pointsOverrides: { '16': 9 }, statId: 2 // eslint-disable-line quote-props
+          }, {
+            points: 75, statId: 999
+          }]
+        }
       };
     });
 
@@ -162,17 +161,14 @@ describe('League', () => {
       });
     });
 
-    describe('status', () => {
-      test('returns an object', () => {
+    describe('scoringSettings', () => {
+      test('maps to object using constants', () => {
         const league = League.buildFromServer(data);
-        expect(league.status).toEqual(expect.any(Object));
-      });
-
-      test('maps currentMatchupPeriodId directly', () => {
-        const league = League.buildFromServer(data);
-        expect(league.status.currentMatchupPeriod).toBe(
-          status.currentMatchupPeriod
-        );
+        expect(league.scoringSettings).toStrictEqual({
+          passingAttempts: 1,
+          passingIncompletions: 9,
+          passingCompletions: 4
+        });
       });
     });
   });

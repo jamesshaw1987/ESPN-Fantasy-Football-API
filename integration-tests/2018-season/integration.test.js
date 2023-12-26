@@ -1,8 +1,10 @@
-import { Client } from '../src/index';
+import 'dotenv/config'; // Create a root .env file defining LEAGUE_ID, ESPN_S2, and SWID
+
+import { Client } from '../../src/index';
 
 jest.setTimeout(10000);
 
-describe('client integration tests', () => {
+describe('2018 season client integration tests', () => {
   let client;
   let leagueId;
   let seasonId;
@@ -30,17 +32,10 @@ describe('client integration tests', () => {
     });
   });
 
-  describe('getHistoricalScoreboardForWeek', () => {
-    beforeEach(() => {
-      seasonId = 2016;
-    });
-
-    test('returns a populated array of Boxscores', async () => {
-      const scoreboards = await client.getHistoricalScoreboardForWeek({
-        seasonId, matchupPeriodId: scoringPeriodId, scoringPeriodId
-      });
-
-      expect(scoreboards).toMatchSnapshot();
+  describe('getDraftInfo', () => {
+    test('returns a populated array of DraftPlayers', async () => {
+      const draft = await client.getDraftInfo({ seasonId });
+      expect(draft).toMatchSnapshot();
     });
   });
 

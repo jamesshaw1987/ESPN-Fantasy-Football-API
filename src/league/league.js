@@ -2,7 +2,10 @@ import _ from 'lodash';
 
 import BaseObject from '../base-classes/base-object/base-object';
 
-import { slotCategoryIdToPositionMap } from '../constants.js';
+import {
+  scoringIdToItem,
+  slotCategoryIdToPositionMap
+} from '../constants';
 
 /* global DRAFT_TYPE, LINEUP_LOCK_TIMES */
 
@@ -15,16 +18,20 @@ class League extends BaseObject {
   static displayName = 'League';
 
   /**
-   * @typedef {object} League~DraftSettings
+   * @typedef {object} DraftSettings
    *
    * @property {Date} date The date of the draft.
    * @property {DRAFT_TYPE} type The type of draft.
    * @property {number} timePerPick The amount of time to make a selection.
    * @property {boolean} canTradeDraftPicks Whether or not draft picks can be traded.
+   * @property {number} currentMatchupPeriodId The current matchup period id (see README.md for
+   *   matchupPeriod v. scoringPeriod)
+   * @property {number} currentScoringPeriodId The current scoring period id (see README.md for
+   *   matchupPeriod v. scoringPeriod)
    */
 
   /**
-   * @typedef {object} League~RosterSettings
+   * @typedef {object} RosterSettings
    *
    * @property {object} lineupPositionCount How many slots of each position are in a starting
    *                                        lineup. Key is position; value is count.
@@ -34,7 +41,7 @@ class League extends BaseObject {
    */
 
   /**
-   * @typedef {object} League~ScheduleSettings
+   * @typedef {object} ScheduleSettings
    *
    * @property {number} numberOfRegularSeasonMatchups The number of regular season matchups a team
    *                                                  will have on the schedule.
@@ -46,31 +53,28 @@ class League extends BaseObject {
    */
 
   /**
-   * @typedef {object} League~Status
-   *
-   * @property {number} currentMatchupPeriod The matchup period currently in progress
-   */
-
-  /**
-   * @typedef {object} League~LeagueMap
+   * @typedef {object} LeagueMap
    *
    * @property {string} name The name of the league.
    * @property {number} size The number of teams in the league.
    * @property {boolean} isPublic Whether or not the league is publically visible and accessible.
    *
-   * @property {League~DraftSettings} draftSettings The draft settings of the league.
-   * @property {League~RosterSettings} rosterSettings The roster settings of the league.
-   * @property {League~ScheduleSettings} scheduleSettings The schedule settings of the league.
-   * @property {League~Status} status The status of the league.
+   * @property {DraftSettings} draftSettings The draft settings of the league.
+   * @property {RosterSettings} rosterSettings The roster settings of the league.
+   * @property {ScheduleSettings} scheduleSettings The schedule settings of the league.
+   * @property {object} scoringSettings The scoring settings of the league.
    */
 
   /**
-   * @type {League~LeagueMap}
+   * @type {LeagueMap}
    */
   static responseMap = {
     name: 'name',
     size: 'size',
     isPublic: 'isPublic',
+
+    currentMatchupPeriodId: 'currentMatchupPeriodId',
+    currentScoringPeriodId: 'currentScoringPeriodId',
 
     draftSettings: {
       key: 'draftSettings',
@@ -116,11 +120,27 @@ class League extends BaseObject {
       }
     },
 
-    status: {
-      key: 'status',
-      manualParse: (responseData) => ({
-        currentMatchupPeriod: responseData.currentMatchupPeriod
-      })
+    scoringSettings: {
+      key: 'scoringSettings',
+      manualParse: (responseData) => _.reduce(
+        responseData.scoringItems,
+        (acc, { points, pointsOverrides, statId }) => {
+          const key = scoringIdToItem[statId];
+
+          if (!key) {
+            return acc;
+          }
+
+          if (pointsOverrides) {
+            acc[key] = _.first(_.values(pointsOverrides));
+          } else {
+            acc[key] = points;
+          }
+
+          return acc;
+        },
+        {}
+      )
     }
   };
 }

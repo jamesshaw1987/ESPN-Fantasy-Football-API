@@ -1,17 +1,10 @@
 import _ from 'lodash';
 
-import BaseCacheableObject from '../base-classes/base-cacheable-object/base-cacheable-object.js';
-
 import Player from '../player/player';
 
 import Team from './team';
 
 describe('Team', () => {
-  test('extends BaseCacheableObject', () => {
-    const instance = new Team();
-    expect(instance).toBeInstanceOf(BaseCacheableObject);
-  });
-
   describe('constructor', () => {
     describe('when options are not passed', () => {
       const testPropIsUndefined = (prop) => {
@@ -46,6 +39,11 @@ describe('Team', () => {
       describe('manualParse', () => {
         test('returns an array of players', () => {
           const data = {
+            owner: {
+              firstName: 'Test',
+              id: '{BAD5167F-96F5-40FF-AFF0-4D2CC92F4058}',
+              lastName: 'Owner'
+            },
             roster: {
               entries: [{
                 playerPoolEntry: { id: 0 }
