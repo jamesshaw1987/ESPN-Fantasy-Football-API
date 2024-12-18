@@ -1274,7 +1274,7 @@ function _toPrimitive(input, hint) { if (_typeof(input) !== "object" || input ==
 
 
 
-axios__WEBPACK_IMPORTED_MODULE_14__["default"].defaults.baseURL = 'https://fantasy.espn.com/apis/v3/games/ffl/seasons/';
+axios__WEBPACK_IMPORTED_MODULE_14__["default"].defaults.baseURL = 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/';
 
 /**
  * Provides functionality to make a variety of API calls to ESPN for a given fantasy football
@@ -1433,7 +1433,7 @@ var Client = /*#__PURE__*/function () {
         params: "?scoringPeriodId=".concat(scoringPeriodId, "&seasonId=").concat(seasonId) + '&view=mMatchupScore&view=mScoreboard&view=mSettings&view=mTopPerformers&view=mTeam'
       });
       var axiosConfig = this._buildAxiosConfig({
-        baseURL: 'https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/'
+        baseURL: 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/leagueHistory/'
       });
       return axios__WEBPACK_IMPORTED_MODULE_14__["default"].get(route, axiosConfig).then(function (response) {
         var schedule = lodash_get__WEBPACK_IMPORTED_MODULE_5___default()(response.data[0], 'schedule'); // Data is an array instead of object
@@ -1569,7 +1569,7 @@ var Client = /*#__PURE__*/function () {
         params: "?scoringPeriodId=".concat(scoringPeriodId, "&seasonId=").concat(seasonId) + '&view=mMatchupScore&view=mScoreboard&view=mSettings&view=mTopPerformers&view=mTeam&view=mRoster'
       });
       var axiosConfig = this._buildAxiosConfig({
-        baseURL: 'https://fantasy.espn.com/apis/v3/games/ffl/leagueHistory/'
+        baseURL: 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/leagueHistory/'
       });
       return axios__WEBPACK_IMPORTED_MODULE_14__["default"].get(route, axiosConfig).then(function (response) {
         return (
